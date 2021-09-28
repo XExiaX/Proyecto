@@ -1,0 +1,47 @@
+pipeline {
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '3', artifactNumToKeepStr: '3'))
+    }    
+    agent {
+        node {
+            label 'jnlp'
+        }
+    }
+    stages {    
+		stage ('Obtener version') {
+			steps {
+				script {
+					def gitCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+					versionNumber =  gitCommit.take(8)
+					def artefactoytag= "int-api-picking:${versionNumber}"
+					sh 'sed -ie "s/#{artefacto}/int-api-picking/g" Deploy.yaml'
+                    sh 'sed -ie "s/#{registry-secret}/ibm-cloud-cr/g" Deploy.yaml'
+                    sh 'sed -ie "s/#{target-port}/3001/g" Deploy.yaml'
+                    sh 'sed -ie "s/#{port}/80/g" Deploy.yaml'                                        
+                    sh 'sed -ie "s/#{host-registry}/us.icr.io/g" Deploy.yaml'
+                    sh 'sed -ie "s/#{artifact-and-tag}/'+"${artefactoytag}"+'/g" Deploy.yaml'
+                    sh 'cp Deploy.yaml Deploy-prd.yaml'
+                    archiveArtifacts('**.yaml')                    
+				}
+			}
+		}   
+		stage('Build Docker Image') {
+			steps {
+							container('docker') {
+								withCredentials([[$class: 'UsernamePasswordMultiBinding', 
+										credentialsId: 'spsa-registry',
+										usernameVariable: 'DOCKER_REG_USER', 
+										passwordVariable: 'DOCKER_REG_PASSWORD']]) {
+                                    script {
+                                        def imagen = "us.icr.io/ws-rest/int-api-picking:${versionNumber}"
+                                        sh "docker build -t ${imagen} ."
+                                        sh "docker login http://us.icr.io -u ${env.DOCKER_REG_USER} -p ${env.DOCKER_REG_PASSWORD} "
+                                        sh "docker push ${imagen} "
+                                    }    
+								}
+							}
+			}
+		}        
+    }
+}
+def versionNumber = ''

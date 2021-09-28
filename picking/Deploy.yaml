@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: #{artefacto}
+  name: #{artefacto}
+spec:
+  replicas: #{nreplicas}
+  selector:
+    matchLabels:
+      app: #{artefacto}  
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: #{artefacto}  
+    spec:
+      imagePullSecrets:
+        - name: #{registry-secret}
+      containers:
+      - image: #{host-registry}/ws-rest/#{artifact-and-tag}
+        imagePullPolicy: IfNotPresent
+        name: #{artefacto}
+        ports:
+        - containerPort: #{target-port}
+          name: #{target-port}tcp01s
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: #{target-port}
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 2
+          successThreshold: 2
+          timeoutSeconds: 2
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: #{target-port}
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 2
+          successThreshold: 1
+          timeoutSeconds: 2                       
+        resources: { }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {}
+          privileged: false
+          readOnlyRootFilesystem: false
+          runAsNonRoot: false
+        tty: true
+        volumeMounts:
+        - mountPath: src/util/constantes.js
+          name: configuracion
+          subPath: constantes.js      
+        - mountPath: src/baseDatos/dbconfigCT2.js
+          name: configuracion
+          subPath: dbconfigCT2.js 
+        - mountPath: src/baseDatos/dbconfigPMM.js
+          name: configuracion
+          subPath: dbconfigPMM.js
+        - mountPath: src/baseDatos/dbconfigPUC.js
+          name: configuracion
+          subPath: dbconfigPUC.js
+        - mountPath: src/baseDatos/dbconfigCEM.js
+          name: configuracion
+          subPath: dbconfigCEM.js
+        - mountPath: src/baseDatos/dbconfigCEMCoupons.js
+          name: configuracion
+          subPath: dbconfigCEMCoupons.js
+        - mountPath: src/baseDatos/dbconfigDP.js
+          name: configuracion
+          subPath: dbconfigDP.js
+        - mountPath: src/baseDatos/dbconfigappSPSA.js
+          name: configuracion
+          subPath: dbconfigappSPSA.js
+                               
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      volumes:
+      - configMap:
+          defaultMode: 256
+          name: #{artefacto}
+          optional: false
+        name: configuracion    
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: #{artefacto}
+  name: #{artefacto}
+spec:
+  ports:
+  - port: #{port}
+    protocol: TCP
+    targetPort: #{target-port}
+  selector:
+    app: #{artefacto}
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: #{artefacto}
+spec:
+  rules:
+  - host: #{artefacto}-#{ambiente}.#{host}
+    http:
+      paths:
+      - backend:
+          serviceName: #{artefacto}
+          servicePort: #{port}
