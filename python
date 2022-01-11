@@ -1,0 +1,412 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
+import airflow 
+from airflow import DAG 
+from airflow.operators.bash_operator import BashOperator
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime, timedelta, date
+from airflow.contrib.hooks.ssh_hook import SSHHook
+import requests
+import json
+from smb.SMBConnection import SMBConnection
+import pandas as pd
+import cx_Oracle
+from airflow.hooks.oracle_hook import OracleHook
+from airflow.models import Variable
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+import os, fnmatch   
+import os.path as path
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+import pysftp
+import uuid
+import shutil
+import os, fnmatch
+import requests
+import os
+import re
+import json
+import time 
+import framework.util.notification as utl_notif
+from airflow.contrib.operators.file_to_gcs import FileToGoogleCloudStorageOperator
+from airflow.contrib.hooks.gcs_hook import GoogleCloudStorageHook
+
+#Nivel de paralelismo
+config = { 
+"nivel_paralelismo" : 5,
+"codIntegracion" : "I0576",
+"nombreIntegracion" : "CATEGORY_MANAGEMENT",
+"origen" : "DEVOPS",
+"template": "TMPL0001",
+"company": "SP",
+"debug" : True
+}
+config["rutaStaging"] = "/staging/"+config["codIntegracion"]+"-"+config["nombreIntegracion"]+"/"
+
+
+
+
+
+def funcion_transporte(**kwargs):
+    hora = datetime.now() - timedelta(hours=5)
+    DIA = (hora.strftime('%A'))
+
+    if(DIA=="Monday"):
+        print("entra")
+        sftpHook = SFTPHook('ssh_skb') 
+        a="/mft/output/CATMAN/NUBE/"  
+        bucket = "spsa"
+        storageId = "sistemas-bi"
+        try:
+            print("Ingresamos a la def subirGoogleCloud")
+            hook = GoogleCloudStorageHook(google_cloud_storage_conn_id=storageId)
+            print("ingreso")
+            x=hook.exists(bucket, "Comercial/Category/performance/actual/catman_itx_pos_SPSA.csv")
+            x=hook.exists(bucket, "Comercial/Category/performance/reproceso/catman_itx_pos_SPSA_re.csv")
+
+            print(x)
+            hook.download("spsa", "Comercial/Category/performance/actual/catman_itx_pos_SPSA.csv", "/mft/output/CATMAN/NUBE/catman_itx_pos_SPSA.csv")
+            hook.download("spsa", "Comercial/Category/performance/reproceso/catman_itx_pos_SPSA_re.csv", "/mft/output/CATMAN/NUBE/catman_itx_pos_SPSA_re.csv")
+
+            for file in os.listdir(a):  
+                print(file) 
+                #sftpHook.store_file ("/data/volumes/mft/output/NUBE/"+ file, "/home/supckbeustst/Inbox/spsa")
+                sftpHook.store_file('/home/supckbeustst/Inbox/spsa/'+file , '/mft/output/CATMAN/NUBE/'+ file)
+
+
+        except Exception as e:
+            #print(str(e))
+            print("***************")
+            error = str(e)
+            print(error)
+            asunto = config["codIntegracion"] + '-' + config["nombreIntegracion"] 
+            mensaje = "ERROR: Se encontro un error en el transporte "
+            cuerpo = mensaje + """<html><body><h3>""" + str(e) + """</h3></body></html>"""            
+            utl_notif.send_email(cuerpo, asunto, config["codIntegracion"],config["company"], config["template"])
+
+ 
+
+
+args = {
+    'owner': 'airflow',
+    'start_date': airflow.utils.dates.days_ago(1)
+    #'on_failure_callback': funciones.get_envio_correo_error(config),
+}
+
+dag = DAG(
+    dag_id=config["codIntegracion"]+"-"+config["nombreIntegracion"],
+    catchup=False,
+    max_active_runs=1,
+    default_args=args,
+    schedule_interval='35 18 * * *',
+    #schedule_interval=None,
+    # 8 Min 6 a 11
+    dagrun_timeout=timedelta(minutes=60),
+)
+
+ruta_base = config["rutaStaging"] + "{{ ds }}/{{ run_id }}"
+
+init_task = BashOperator(
+    task_id='init',
+    bash_command='mkdir -p '+ruta_base,
+    dag=dag
+)
+
+
+
+t_funcion_transporte = PythonOperator(
+    task_id='funcion_transporte',
+    provide_context=True,
+    python_callable=funcion_transporte,
+    do_xcom_push=True,
+    retries=3,
+    retry_delay=timedelta(seconds=10),
+    #bash_command='echo "{{ task_instance.try_number }}"',
+    dag=dag)
+
+
+
+
+
+
+t_funcion_transporte.set_upstream(init_task)
+
+
+# In[ ]:
+
+
+import airflow 
+from airflow import DAG 
+from airflow.operators.bash_operator import BashOperator
+from airflow.operators.python_operator import PythonOperator
+from datetime import timedelta
+from airflow.contrib.hooks.ssh_hook import SSHHook
+import requests
+import json
+from smb.SMBConnection import SMBConnection
+import pandas as pd
+import cx_Oracle
+import datetime
+from airflow.hooks.oracle_hook import OracleHook
+from airflow.models import Variable
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+import os, fnmatch   
+import os.path as path
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+from datetime import timedelta
+import pysftp
+import uuid
+import shutil
+import datetime
+import os, fnmatch
+import requests
+import os
+import re
+import json
+import time 
+import framework.util.notification as utl_notif
+from airflow.contrib.operators.file_to_gcs import FileToGoogleCloudStorageOperator
+from airflow.contrib.hooks.gcs_hook import GoogleCloudStorageHook
+
+import schedule
+
+#Nivel de paralelismo
+config = { 
+"nivel_paralelismo" : 5,
+"codIntegracion" : "I0576",
+"nombreIntegracion" : "CATEGORY_MANAGEMENT",
+"origen" : "DEVOPS",
+"template": "TMPL0001",
+"company": "SP",
+"debug" : True
+}
+config["rutaStaging"] = "/staging/"+config["codIntegracion"]+"-"+config["nombreIntegracion"]+"/"
+
+
+
+def funcion_transporte(**kwargs):
+    sftpHook = SFTPHook('ssh_skb') 
+    a="/mft/output/CATMAN/NUBE/"  
+    bucket = "spsa"
+    storageId = "sistemas-bi"
+    try:
+        print("Ingresamos a la def subirGoogleCloud")
+        hook = GoogleCloudStorageHook(google_cloud_storage_conn_id=storageId)
+        print("ingreso")
+        x=hook.exists(bucket, "Comercial/Category/performance/actual/catman_itx_pos_SPSA.csv")
+        x=hook.exists(bucket, "Comercial/Category/performance/reproceso/catman_itx_pos_SPSA_re.csv")
+
+        print(x)
+        hook.download("spsa", "Comercial/Category/performance/actual/catman_itx_pos_SPSA.csv", "/mft/output/CATMAN/NUBE/catman_itx_pos_SPSA.csv")
+        hook.download("spsa", "Comercial/Category/performance/reproceso/catman_itx_pos_SPSA_re.csv", "/mft/output/CATMAN/NUBE/catman_itx_pos_SPSA_re.csv")
+
+        for file in os.listdir(a):  
+            print(file) 
+            #sftpHook.store_file ("/data/volumes/mft/output/NUBE/"+ file, "/home/supckbeustst/Inbox/spsa")
+            sftpHook.store_file('/home/supckbeustst/Inbox/spsa/'+file , '/mft/output/CATMAN/NUBE/'+ file)
+   
+
+    except Exception as e:
+        #print(str(e))
+        print("***************")
+        error = str(e)
+        print(error)
+        asunto = config["codIntegracion"] + '-' + config["nombreIntegracion"] 
+        mensaje = "ERROR: Se encontro un error en el transporte "
+        cuerpo = mensaje + """<html><body><h3>""" + str(e) + """</h3></body></html>"""            
+        utl_notif.send_email(cuerpo, asunto, config["codIntegracion"],config["company"], config["template"])
+
+
+schedule.every().friday.at("18:32").do(funcion_transporte)
+
+while True:
+    schedule.run_pending()
+    time.sleep(1)
+
+
+args = {
+    'owner': 'airflow',
+    'start_date': airflow.utils.dates.days_ago(1)
+    #'on_failure_callback': funciones.get_envio_correo_error(config),
+}
+
+dag = DAG(
+    dag_id=config["codIntegracion"]+"-"+config["nombreIntegracion"],
+    catchup=False,
+    max_active_runs=1,
+    default_args=args,
+    schedule_interval='* * * * *',
+    #schedule_interval=None,
+    # 8 Min 6 a 11
+    dagrun_timeout=timedelta(minutes=60),
+)
+
+ruta_base = config["rutaStaging"] + "{{ ds }}/{{ run_id }}"
+
+init_task = BashOperator(
+    task_id='init',
+    bash_command='mkdir -p '+ruta_base,
+    dag=dag
+)
+
+
+
+t_funcion_transporte = PythonOperator(
+    task_id='funcion_transporte',
+    provide_context=True,
+    python_callable=funcion_transporte,
+    do_xcom_push=True,
+    retries=3,
+    retry_delay=timedelta(seconds=10),
+    #bash_command='echo "{{ task_instance.try_number }}"',
+    dag=dag)
+
+
+
+
+
+
+t_funcion_transporte.set_upstream(init_task)
+
+
+# In[1]:
+
+
+import airflow 
+from airflow import DAG 
+from airflow.operators.bash_operator import BashOperator
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime, timedelta, date
+from airflow.contrib.hooks.ssh_hook import SSHHook
+import requests
+import json
+from smb.SMBConnection import SMBConnection
+import pandas as pd
+import cx_Oracle
+from airflow.hooks.oracle_hook import OracleHook
+from airflow.models import Variable
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+import os, fnmatch   
+import os.path as path
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+import pysftp
+import uuid
+import shutil
+import os, fnmatch
+import requests
+import os
+import re
+import json
+import time 
+import framework.util.notification as utl_notif
+from airflow.contrib.operators.file_to_gcs import FileToGoogleCloudStorageOperator
+from airflow.contrib.hooks.gcs_hook import GoogleCloudStorageHook
+
+hora = datetime.now() - timedelta(hours=5)
+DIA = (hora.strftime('%A'))
+ 
+if(DIA=="Friday"):
+    print("entra")
+
+
+# In[3]:
+
+
+import airflow 
+from airflow import DAG 
+from airflow.operators.bash_operator import BashOperator
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime, timedelta, date
+from airflow.contrib.hooks.ssh_hook import SSHHook
+import requests
+import json
+from smb.SMBConnection import SMBConnection
+import pandas as pd
+import cx_Oracle
+from airflow.hooks.oracle_hook import OracleHook
+from airflow.models import Variable
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+import os, fnmatch   
+import os.path as path
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+import pysftp
+import uuid
+import shutil
+import os, fnmatch
+import requests
+import os
+import re
+import json
+import time 
+import framework.util.notification as utl_notif
+from airflow.contrib.operators.file_to_gcs import FileToGoogleCloudStorageOperator
+from airflow.contrib.hooks.gcs_hook import GoogleCloudStorageHook
+
+#Nivel de paralelismo
+config = { 
+"nivel_paralelismo" : 5,
+"codIntegracion" : "I0576",
+"nombreIntegracion" : "CATEGORY_MANAGEMENT",
+"origen" : "DEVOPS",
+"template": "TMPL0001",
+"company": "SP",
+"debug" : True
+}
+config["rutaStaging"] = "/staging/"+config["codIntegracion"]+"-"+config["nombreIntegracion"]+"/"
+
+
+
+
+
+def funcion_transporte():
+    hora = datetime.now() - timedelta(hours=5)
+    DIA = (hora.strftime('%A'))
+
+    
+    print("entra")
+    sftpHook = SFTPHook('ssh_skb') 
+    a="/mft/output/CATMAN/NUBE/"  
+    bucket = "spsa"
+    storageId = "sistemas-bi"
+    try:
+        print("Ingresamos a la def subirGoogleCloud")
+        hook = GoogleCloudStorageHook(google_cloud_storage_conn_id=storageId)
+        print("ingreso")
+        x=hook.exists(bucket, "Comercial/Category/performance/actual/catman_itx_pos_SPSA.csv")
+        x=hook.exists(bucket, "Comercial/Category/performance/reproceso/catman_itx_pos_SPSA_re.csv")
+
+        print(x)
+        hook.download("spsa", "Comercial/Category/performance/actual/catman_itx_pos_SPSA.csv", "/mft/output/CATMAN/NUBE/catman_itx_pos_SPSA.csv")
+        hook.download("spsa", "Comercial/Category/performance/reproceso/catman_itx_pos_SPSA_re.csv", "/mft/output/CATMAN/NUBE/catman_itx_pos_SPSA_re.csv")
+
+        for file in os.listdir(a):  
+            print(file) 
+            #sftpHook.store_file ("/data/volumes/mft/output/NUBE/"+ file, "/home/supckbeustst/Inbox/spsa")
+            sftpHook.store_file('/home/supckbeustst/Inbox/spsa/'+file , '/mft/output/CATMAN/NUBE/'+ file)
+
+
+    except Exception as e:
+        #print(str(e))
+        print("***************")
+        error = str(e)
+        print(error)
+        asunto = config["codIntegracion"] + '-' + config["nombreIntegracion"] 
+        mensaje = "ERROR: Se encontro un error en el transporte "
+        cuerpo = mensaje + """<html><body><h3>""" + str(e) + """</h3></body></html>"""            
+        utl_notif.send_email(cuerpo, asunto, config["codIntegracion"],config["company"], config["template"])
+
+ 
+
+
+
+funcion_transporte()
+
+
+# In[ ]:
+
+
+
+
