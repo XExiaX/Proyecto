@@ -1,0 +1,546 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[2]:
+
+
+import airflow
+from airflow import DAG
+from airflow.operators.bash_operator import BashOperator
+from airflow.operators.python_operator import PythonOperator
+from airflow.hooks.mssql_hook import MsSqlHook
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+from pyrfc import Connection, ABAPApplicationError, ABAPRuntimeError, LogonError, CommunicationError, RFCError
+import os.path as path
+import datetime
+from datetime import datetime, timedelta
+from smb.SMBConnection import SMBConnection
+#from smb.SMBTimeout import SMBTimeout
+import tempfile
+import os, fnmatch
+import json
+import requests
+from airflow.models import Variable
+import math
+import pandas as pd
+import numpy as np
+from threading import Thread
+from multiprocessing.pool import ThreadPool
+from jinja2 import Template
+import framework.util.notification as utl_notif
+
+from socket import *
+
+config = {"nivel_paralelismo": 5,
+          # begin nombre
+          "codIntegracion": "I0488",
+          "nombreIntegracion": "TARJETA_EMPRESARIAL",
+          "empresaIntegracion": "SP",
+          "areaIntegracion": "BO",
+          "criticidadIntegracion": "ALTA",
+          "debug": True,
+          "template" : "TMPL0001"
+          }
+config["rutaStaging"] = "/staging/"+config["codIntegracion"]+"-"+config["nombreIntegracion"]+"/"
+
+
+
+def procesarNuevo(**kwargs):
+    fec_hor = datetime.now().strftime("%Y%m%d")
+    hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    var = Variable.get("I0488_VARIABLE", deserialize_json=True)
+    usuario = var['usuario']
+    passwd = var['passwd']
+    ashost = var['ashost']
+    sysnr = var['sysnr']
+    client = var['client']
+    local = var['local']
+
+    CORREOTO = var['CORREOTO']
+    CORREOCC = var['CORREOCC']
+
+    ruta_base = var['ruta_base_N']
+    conn = Connection(user=usuario, passwd=passwd, ashost=ashost, sysnr=sysnr, client=client)
+
+    if conn != 1:
+        print("Conexion Correcta")
+        local = "P195"
+        print(local)
+        archivo = "TB_DLICI.TXT"
+        archivo_trg = "TB_DLICI.TXT.TRG"
+
+        archivo_l = "P_REGTB_DLICI.TXT"
+        archivi_trg_l = "P_REGTB_DLICI.TXT.TRG"
+
+        cant = 0
+        cantf = 0
+
+        if path.isfile(ruta_base + archivo):
+            print("Borrando")
+            os.remove(ruta_base + archivo)
+        if path.isfile(ruta_base + archivo_l):
+            print("Borrando")
+            os.remove(ruta_base + archivo_l)
+
+        result = conn.call('ZFI_TARJ_EMP_PROD_PMM', IP_WERKS=local, IP_DATE=fec_hor)
+
+    for k, v in result.items():
+            for k, v in result.items():
+                for value in v:
+                    NUM_PEDIDO = value["NUM_PEDIDO"]
+                    COD_AREA = value["COD_AREA"]
+                    COD_SECCION = value["COD_SECCION"]
+                    COD_LINEA = value["COD_LINEA"]
+                    FEC_INICIO = value["FEC_INICIO"]
+                    FEC_FIN = value["FEC_FIN"]
+                    fechaInicio1 = FEC_INICIO[2:4]
+                    fechaInicio2 = FEC_INICIO[4:-2]
+                    fechaInicio3 = FEC_INICIO[-2:]
+                    FechaIncioFinal = fechaInicio1 + "" + fechaInicio2 + "" + fechaInicio3
+
+                    fechaFin1 = FEC_FIN[2:4]
+                    fechaFin2 = FEC_FIN[4:-2]
+                    fechaFin3 = FEC_FIN[-2:]
+                    fechaFinFinal = fechaFin1 + "" + fechaFin2 + "" + fechaFin3
+                    registro = NUM_PEDIDO + " " + COD_AREA + " " + COD_SECCION + " " + COD_LINEA + " " + FechaIncioFinal + " " + fechaFinFinal
+                    if NUM_PEDIDO == '' or COD_AREA == '' or COD_SECCION == '' or COD_LINEA == '' or FechaIncioFinal == '' or fechaFinFinal == '':
+                        registro = ''
+                    else:
+                        archivo_f = open(ruta_base + "/" + archivo, "a")
+                        archivo_f.write(registro)
+                        archivo_f.write("\n")
+                        cant = cant + 1
+                        archivo_f.close()
+
+                        archivo_f_l = open(ruta_base + "/" + archivo_l, "a")
+                        archivo_f_l.write(registro)
+                        archivo_f_l.write("\n")
+                        cantf = cantf + 1
+                        archivo_f.close()  
+    print(conn.alive)
+    conn.close()
+    print(conn.alive)
+    print(cant)
+
+    archivo_trg_f = open(ruta_base + archivo_trg, "w")
+    archivo_trg_f.close()
+
+    hook1 = MsSqlHook(mssql_conn_id='mssql_carteleria')  # destino
+    conn_carteleria = hook1.get_conn()
+    df1 = pd.read_sql(sql="select * from TBDLICI_CONF_LOCAL where IND_JER_PMM = 'S' ", con=conn_carteleria)
+    #and COD_LOCAL in ('250','422')
+    chunks = np.array_split(df1, config["nivel_paralelismo"])
+    ejecutahilosN(chunks)  
+    #print(df1)
+
+def ejecutahilosN(chunks):
+    nthreads = len(chunks)
+    pool = ThreadPool(nthreads)
+    threads = []
+    # create the threads
+    for i in range(nthreads):
+      threads.append(pool.apply_async(procesaN, args=(i, chunks[i])))
+    # start the threads
+    pool.close()
+    pool.join()
+    results = [r.get() for r in threads]
+    #print("results[0]")
+    #print(results)
+    results = [item for sublist in results for item in sublist]
+    correosArray = template(results)
+    print("#####################Errores encontrados ejecutahilos ###################")
+    print(results)
+    print("###########################################################")
+    if correosArray:
+        correo(correosArray,'Nuevo')
+
+def procesaN(i, chunk): 
+    print(f"hilo: {i}\n")
+    cont=0
+    errores = []
+    descError=""
+    fec_hor = datetime.now().strftime("%Y%m%d")
+    hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    var = Variable.get("I0488_VARIABLE", deserialize_json=True)
+
+    ruta_base = var['ruta_base_N']
+
+    for index,row in chunk.iterrows():
+
+        while cont < 3:
+            try:
+                if row[3] == 'W':
+                    userID = row[9]
+                    password = row[10]
+                    client_machine_name = 'localass'
+                    server_name = row[1]
+                    server_ip = row[1]
+                    domain_name = ''
+                    # patron  = conex_X_patronW[i][6]
+                    ruta = '/Server/'
+                    print("-------------------------------Conexion NUEVO WINDOWS------------------------------------------------")
+                    print("Conectando al Local Windows : " + row[7] + " con IP : " + row[1] + " intento " + str(cont))
+                    connW = SMBConnection(userID, password, client_machine_name, server_name, domain=domain_name,
+                                         sign_options=SMBConnection.SIGN_WHEN_REQUIRED,
+                                         is_direct_tcp=True)
+
+                    (connW.connect(server_ip, 445))
+
+                    for file in os.listdir(ruta_base):                   
+                            if fnmatch.fnmatch(file, "TB_DLICI.*"):
+                                print(file)
+                                with open(ruta_base + file, "rb") as file_objs:
+                                    file_obj = tempfile.NamedTemporaryFile()
+                                    os.fchmod(file_obj.fileno(), 0o640)
+                                    mov = connW.storeFile('ASRSRV', ruta + file, file_objs)
+                                    file_obj.close()
+                                    print(mov)
+                                    print("-------------------------------Transporte------------------------------------------------")
+                                    print("Archivo transportado en Local : " + row[7] + " con IP : " + row[1])
+                    #(print("romper"))
+                    connW.close()
+                    break
+                if row[3] == 'L':
+                    #if row[5] == 'S':
+                    #print("--------S--------------")
+                    #print(row[1])
+                    # for i in range(len(conex_X_patronL)):
+                    print("-------------------------------Conexion NUEVO LINUX------------------------------------------------")
+                    print("Conectando al Local Windows : " + row[7] + " con IP : " + row[1] + " intento " + str(cont))
+                    conex = row[1]
+                    # patron  = conex_X_patronL[i][1]
+                    ruta = '/home/server/'
+
+                    direccionSftp = SFTPHook(ftp_conn_id=conex)
+
+                    for file in os.listdir(ruta_base):
+                        if fnmatch.fnmatch(file, "P_REGTB_DLICI.*"):
+                            print(file)
+                            direccionSftp.store_file(ruta + file, ruta_base + file)
+                    print("Archivo transportado en Local : " + row[7] + " con IP : " + row[1])
+                    break    
+            except timeout:
+                #print("entro a time")
+                print("-------------------------------Error------------------------------------------------")
+                print("Error en Local Windows : " + row[7] + " timeout")
+                descError="El usuario es desconectado automaticamente de Internet por haber alcanzado el limite de tiempo establecido "
+            except Exception as e:
+
+                #print("***************")
+                #print(hora)
+                #print ("error en "+row[1]+" "+str(e))
+                #error = str(e)
+                descError="Exception: {}".format(type(e).__name__)
+                print("-------------------------------Error------------------------------------------------")
+                print("Error en Local Windows : " + row[7] + descError)
+                #print(type(e))
+
+                #print("Exception: {}".format(type(e).__name__))
+                #print("Exception message: {}".format(e))
+            cont += 1
+        if cont==3:
+            horaError=f"{datetime.now() - timedelta(hours=5):%H:%M:%S}"
+            errores.append([str(row[7]),str(row[1]),horaError,str(row['IND_ENVIO']), str(descError)])
+        cont=0
+        descError=""
+    return errores
+
+def procesarViejo(**kwargs):
+    fec_hor = datetime.now().strftime("%Y%m%d")
+    hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    var = Variable.get("I0488_VARIABLE", deserialize_json=True)
+    usuario = var['usuario']
+    passwd = var['passwd']
+    ashost = var['ashost']
+    sysnr = var['sysnr']
+    client = var['client']
+    local = var['local']
+
+    CORREOTO = var['CORREOTO']
+    CORREOCC = var['CORREOCC']
+
+    ruta_base = var['ruta_base_V']
+    conn = Connection(user=usuario, passwd=passwd, ashost=ashost, sysnr=sysnr, client=client)
+
+    if conn != 1:
+        print("Conexion Correcta")
+        local = "P195"
+        print(local)
+        archivo = "TB_DLICI.TXT"
+        archivo_trg = "TB_DLICI.TXT.TRG"
+
+        archivo_l = "P_REGTB_DLICI.TXT"
+        archivi_trg_l = "P_REGTB_DLICI.TXT.TRG"
+
+        cant = 0
+        cantf = 0
+
+        if path.isfile(ruta_base + archivo):
+            print("Borrando")
+            os.remove(ruta_base + archivo)
+        if path.isfile(ruta_base + archivo_l):
+            print("Borrando")
+            os.remove(ruta_base + archivo_l)
+        result = conn.call('ZBAPI_RDM_TARJ_EMP_PROD', IP_WERKS=local, IP_DATE=fec_hor)
+    for k, v in result.items():
+            for value in v:
+                NUM_PEDIDO = value["NUM_PEDIDO"]
+                ABTNR = value["ABTNR"]
+                NUM_FAM = value["NUM_FAM"]
+                FEC_INICIO = value["FEC_INICIO"]
+                FEC_FIN = value["FEC_FIN"]
+                fechaInicio1 = FEC_INICIO[2:4]
+                fechaInicio2 = FEC_INICIO[4:-2]
+                fechaInicio3 = FEC_INICIO[-2:]
+                FechaIncioFinal = fechaInicio1 + "" + fechaInicio2 + "" + fechaInicio3
+
+                fechaFin1 = FEC_FIN[2:4]
+                fechaFin2 = FEC_FIN[4:-2]
+                fechaFin3 = FEC_FIN[-2:]
+                fechaFinFinal = fechaFin1 + "" + fechaFin2 + "" + fechaFin3
+                registro = NUM_PEDIDO + " " + ABTNR + " " + NUM_FAM + " " + FechaIncioFinal + " " + fechaFinFinal
+                if NUM_PEDIDO == '' or ABTNR == '' or NUM_FAM == '' or FechaIncioFinal == '' or fechaFinFinal == '':
+                    registro = ''
+                else:
+                    archivo_f = open(ruta_base + "/" + archivo, "a")
+                    archivo_f.write(registro)
+                    archivo_f.write("\n")
+                    cant = cant + 1
+                    archivo_f.close()
+
+                    archivo_f_l = open(ruta_base + "/" + archivo_l, "a")
+                    archivo_f_l.write(registro)
+                    archivo_f_l.write("\n")
+                    cantf = cantf + 1
+                    archivo_f.close() 
+    print(conn.alive)
+    conn.close()
+    print(conn.alive)
+    print(cant)
+
+    archivo_trg_f = open(ruta_base + archivo_trg, "w")
+    archivo_trg_f.close()
+
+    hook1 = MsSqlHook(mssql_conn_id='mssql_carteleria')  # destino
+    conn_carteleria = hook1.get_conn()
+    df1 = pd.read_sql(sql="select * from TBDLICI_CONF_LOCAL where IND_JER_PMM = 'N' ", con=conn_carteleria)
+    #and COD_LOCAL in ('250','422')
+    chunks = np.array_split(df1, config["nivel_paralelismo"])
+    ejecutahilosV(chunks)  
+    #print(df1)
+
+def ejecutahilosV(chunks):
+    nthreads = len(chunks)
+    pool = ThreadPool(nthreads)
+    threads = []
+    # create the threads
+    for i in range(nthreads):
+      threads.append(pool.apply_async(procesaV, args=(i, chunks[i])))
+    # start the threads
+    pool.close()
+    pool.join()
+    results = [r.get() for r in threads]
+    #print("results[0]")
+    #print(results)
+    results = [item for sublist in results for item in sublist]
+    correosArray = template(results)
+    print("#####################Errores encontrados ejecutahilos ###################")
+    print(results)
+    print("###########################################################")
+    if correosArray:
+        correo(correosArray,'Viejo')
+
+def procesaV(i, chunk): 
+    print(f"hilo: {i}\n")
+    cont=0
+    errores = []
+    descError=""
+    fec_hor = datetime.now().strftime("%Y%m%d")
+    hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    var = Variable.get("I0488_VARIABLE", deserialize_json=True)
+
+    ruta_base = var['ruta_base_V']
+
+    for index,row in chunk.iterrows():
+
+        while cont < 3:
+            try:
+                if row[3] == 'W':
+                    userID = row[9]
+                    password = row[10]
+                    client_machine_name = 'localass'
+                    server_name = row[1]
+                    server_ip = row[1]
+                    domain_name = ''
+                    # patron  = conex_X_patronW[i][6]
+                    ruta = '/Server/'
+                    print("-------------------------------Conexion Viejo WINDOWS------------------------------------------------")
+                    print("Conectando al Local Windows : " + row[7] + " con IP : " + row[1] + " intento " + str(cont))
+                    connW = SMBConnection(userID, password, client_machine_name, server_name, domain=domain_name,
+                                         sign_options=SMBConnection.SIGN_WHEN_REQUIRED,
+                                         is_direct_tcp=True)
+
+                    (connW.connect(server_ip, 445))
+
+                    for file in os.listdir(ruta_base):                   
+                            if fnmatch.fnmatch(file, "TB_DLICI.*"):
+                                print(file)
+                                with open(ruta_base + file, "rb") as file_objs:
+                                    file_obj = tempfile.NamedTemporaryFile()
+                                    os.fchmod(file_obj.fileno(), 0o640)
+                                    mov = connW.storeFile('ASRSRV', ruta + file, file_objs)
+                                    file_obj.close()
+                                    print(mov)
+                                    print("-------------------------------Transporte------------------------------------------------")
+                                    print("Archivo transportado en Local : " + row[7] + " con IP : " + row[1])
+                    #(print("romper"))
+                    connW.close()
+                    break
+                if row[3] == 'L':
+                    #if row[5] == 'S':
+
+                    #print(row[1])
+                    # for i in range(len(conex_X_patronL)):
+                    print("-------------------------------Conexion Viejo LINUX------------------------------------------------")
+                    print("Conectando al Local Windows : " + row[7] + " con IP : " + row[1] + " intento " + str(cont))
+                    conex = row[1]
+                    # patron  = conex_X_patronL[i][1]
+                    ruta = '/home/server/'
+
+                    direccionSftp = SFTPHook(ftp_conn_id=conex)
+
+                    for file in os.listdir(ruta_base):
+                        if fnmatch.fnmatch(file, "P_REGTB_DLICI.*"):
+                            print(file)
+                            direccionSftp.store_file(ruta + file, ruta_base + file)
+                    #(print("romper"))
+                    print("Archivo transportado en Local : " + row[7] + " con IP : " + row[1])
+                    break    
+            except timeout:
+                #print("entro a time")
+                print("-------------------------------Error------------------------------------------------")
+                print("Error en Local Windows : " + row[7] + " timeout")
+                descError="El usuario es desconectado automaticamente de Internet por haber alcanzado el limite de tiempo establecido "
+            except Exception as e:
+
+                #print("***************")
+                #print(hora)
+                #print ("error en "+row[1]+" "+str(e))
+                #error = str(e)
+                descError="Exception: {}".format(type(e).__name__)
+                print("-------------------------------Error------------------------------------------------")
+                print("Error en Local Windows : " + row[7] + descError)
+                #print(type(e))
+
+                #print("Exception: {}".format(type(e).__name__))
+                #print("Exception message: {}".format(e))
+            cont += 1
+        if cont==3:
+            horaError=f"{datetime.now() - timedelta(hours=5):%H:%M:%S}"
+            errores.append([str(row[7]),str(row[1]),horaError,str(row['IND_ENVIO']), str(descError)])
+        cont=0
+        descError=""
+    #print(errores)
+
+    print("#####################Errores encontrados procesa ###################")
+    print(errores)
+    print("########################################")
+    return errores
+
+
+def template(results): 
+
+    t = Template('''<table border="1">
+                <thead>
+                <tr>
+                <th>Nombre Local</th>               
+                <th>IP LOCAL</th>
+                <th>tiempo</th>
+                <th>Envio</th>
+                <th>Error</th>
+                </tr>
+                </thead>
+                  {% for row in rows -%}
+                      <tr>
+                          {%for col in row%}
+
+                          <td >{{col}}</td>
+                          {%endfor%}
+                      </tr>
+                      {% endfor %}           
+                 </table>
+                    ''')
+    strg = t.render(rows=results)
+    return strg
+    #print(strg)
+
+def correo(correosArray,funcion):     
+    
+    asunto = config["codIntegracion"] + '-' + config["nombreIntegracion"] 
+    mensaje = "En la funcion con la estructura "+ str(funcion) +"por motivos de intermitencia en la conexion no se puedo dejar los archivos en los siguientes locales  " 
+    cuerpo = mensaje + """<html><body><h3>""" + str(correosArray) + """</h3></body></html>""" +' Informo para los fines del caso .En caso de que la tabla este vacia ignorar el correo'     
+    utl_notif.send_email(cuerpo, asunto, config["codIntegracion"],config["empresaIntegracion"], config["template"])
+
+args = {
+    'owner': 'airflow',
+    'start_date': airflow.utils.dates.days_ago(1)
+    #'on_failure_callback': funciones.get_envio_correo_error(config),
+}
+
+dag = DAG(
+    dag_id=config["empresaIntegracion"]+'-'+config["areaIntegracion"]+'-'+config["codIntegracion"]+'-'+config["nombreIntegracion"]+'-'+config["criticidadIntegracion"],
+    catchup=False,
+    max_active_runs=1,
+    default_args=args,
+    schedule_interval='0 1 * * *',
+    # 8 Min 6 a 11
+    dagrun_timeout=timedelta(minutes=60),
+)     
+
+
+
+ruta_base = config["rutaStaging"] + "{{ ds }}/{{ run_id }}"
+
+#procesarNuevo()    
+#procesarViejo()
+init_task = BashOperator(
+    task_id='init',
+    bash_command='mkdir -p '+ruta_base,
+    dag=dag
+)
+
+ingresoNuevo = PythonOperator(
+    task_id='procesarNuevo',
+    provide_context=True,
+    python_callable=procesarNuevo,
+    do_xcom_push=True,
+    retries=3,
+    retry_delay=timedelta(seconds=10),
+    bash_command='echo "{{ task_instance.try_number }}"',
+    dag=dag)
+
+ingresoViejo = PythonOperator(
+    task_id='procesarViejo',
+    provide_context=True,
+    python_callable=procesarViejo,
+    do_xcom_push=True,
+    retries=3,
+    retry_delay=timedelta(seconds=10),
+    bash_command='echo "{{ task_instance.try_number }}"',
+    dag=dag)
+
+#init_task >> ingreso_retorno_task
+
+ingresoNuevo.set_upstream(init_task)
+ingresoViejo.set_upstream(init_task)
+
+
+# In[ ]:
+
+
+
+
